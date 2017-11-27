@@ -11,32 +11,28 @@ import java.net.URLDecoder;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public class LoginHandler implements HttpHandler {
 
     @Override
     public void handle(HttpExchange httpExchange) throws IOException {
-        String response = "";
+        String response;
         String method = httpExchange.getRequestMethod();
-        String cookieStr = httpExchange.getRequestHeaders().getFirst("Cookie");
+        HttpCookie cookie = getCookie(httpExchange);
 
-        if (method.equals("GET")) {
-            if (httpExchange.getRequestURI().getPath().equals("/login")) {
-                if (isCookieMatch(cookieStr)) {
-                    response = displayHello(cookieStr);
-                } else {
-                    response = displayLoginFormula();
-                }
+        if (cookie != null) {
+            if (method.equals("GET")) {
+                response = displayHello(cookie);
+            } else {
+                response = logout(cookie, httpExchange);
             }
 
-        }
-        if (method.equals("POST")) {
-            if (httpExchange.getRequestURI().getPath().equals("/login")) {
-                if (isCookieMatch(cookieStr)) {
-                    response = logout(cookieStr);
-                } else {
-                    response = login(httpExchange);
-                }
+        } else {
+            if (method.equals("GET")) {
+                response = displayLoginFormula();
+            } else {
+                response = login(httpExchange);
             }
         }
 
@@ -45,6 +41,26 @@ public class LoginHandler implements HttpHandler {
         OutputStream os = httpExchange.getResponseBody();
         os.write(finalResponseBytes);
         os.close();
+    }
+
+    public HttpCookie getCookie(HttpExchange httpExchange) {
+        String cookieStr = httpExchange.getRequestHeaders().getFirst("Cookie");
+        HttpCookie cookie = null;
+        if (cookieStr != null) {  // Cookie already exists
+            cookie = HttpCookie.parse(cookieStr).get(0);
+        }
+
+        return cookie;
+    }
+
+    public HttpCookie createCookie(HttpExchange httpExchange, String login) {
+        // Create a new cookie
+        String sessionId = UUID.randomUUID().toString();
+        HttpCookie cookie = new HttpCookie("sessionId", sessionId);
+        httpExchange.getResponseHeaders().add("Set-Cookie", cookie.toString());
+        this.addCookieToDb(cookie, login);
+
+        return cookie;
     }
 
     public String displayLoginFormula() {
@@ -67,7 +83,8 @@ public class LoginHandler implements HttpHandler {
         String password = inputs.get("password").toString();
 
         if (this.isLoginMatch(login, password)) {
-            return this.logIn(httpExchange, login);
+            HttpCookie cookie = createCookie(httpExchange, login);
+            return displayHello(cookie);
         } else {
             return displayLoginFormula();
         }
@@ -104,64 +121,24 @@ public class LoginHandler implements HttpHandler {
         return false;
     }
 
-    public String logIn(HttpExchange httpExchange, String login) {
-        String cookieStr = httpExchange.getRequestHeaders().getFirst("Cookie");
-        HttpCookie cookie;
-        if (cookieStr != null) {  // Cookie already exists
-            cookie = HttpCookie.parse(cookieStr).get(0);
-
-
-        } else { // Create a new cookie
-            String sessionId = String.valueOf(Math.random() * 5) + "!" + login;
-            cookie = new HttpCookie("sessionId", sessionId);
-            httpExchange.getResponseHeaders().add("Set-Cookie", cookie.toString());
-            this.addCookieToDb(cookie);
-        }
-
-        return displayHello(cookie.getValue());
-    }
-
-    public String displayHello(String cookie) {
+    public String displayHello(HttpCookie cookie) {
         JtwigTemplate template = JtwigTemplate.classpathTemplate("templates/content.twig");
         JtwigModel model = JtwigModel.newModel();
 
-        String login = cookie.split("!")[1];
+        String login = getLoginByCookie(cookie);
         model.with("login", login);
 
         return template.render(model);
     }
 
-    public Boolean isCookieMatch(String cookieStr) {
-        if (cookieStr != null) {
-            String cookieValue = cookieStr.split("\"")[1];
-            String query = "SELECT * FROM `cookies` WHERE sessionId = '" + cookieValue + "';";
-
-
-            try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
-                 Statement stmt = c.createStatement()) {
-
-                ResultSet rs = stmt.executeQuery(query);
-                while (rs.next()) {
-                    if (rs.getString("sessionId").equals(cookieValue)) {
-                        return true;
-                    }
-                }
-
-            } catch (SQLException e) {
-                System.out.println(e.getMessage());
-            }
-        }
-        return false;
-    }
-
-    public void addCookieToDb(HttpCookie cookie) {
+    public void addCookieToDb(HttpCookie cookie, String login) {
         String query = "INSERT INTO `cookies` VALUES (?, ?);";
 
         try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
              PreparedStatement pstmt = c.prepareStatement(query);) {
 
             pstmt.setString(1, cookie.getValue());
-            pstmt.setString(2, cookie.getValue().split("!")[1]);
+            pstmt.setString(2, login);
             pstmt.executeUpdate();
 
         } catch (SQLException e) {
@@ -170,13 +147,12 @@ public class LoginHandler implements HttpHandler {
 
     }
 
-    public String logout(String cookieStr) {
-        removeCookieFromDb(cookieStr);
+    public String logout(HttpCookie cookie, HttpExchange httpExchange) {
+        removeCookie(cookie, httpExchange);
         return displayLoginFormula();
     }
 
-    public void removeCookieFromDb(String cookieStr) {
-        HttpCookie cookie = HttpCookie.parse(cookieStr).get(0);
+    public void removeCookie(HttpCookie cookie, HttpExchange httpExchange) {
         String sessionId = cookie.getValue();
 
         try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
@@ -188,36 +164,31 @@ public class LoginHandler implements HttpHandler {
 
             stmt.executeUpdate(query);
 
+        } catch (SQLException e) {
+            System.out.println(e.getMessage());
+        }
 
+        String newCookie = "sessionId='';max-age=0";
+        httpExchange.getResponseHeaders().add("Set-Cookie", newCookie);
+    }
+
+    public String getLoginByCookie(HttpCookie cookie) {
+        String sessionId = cookie.getValue();
+        String query = "SELECT (login) FROM `cookies` WHERE sessionId = '" + sessionId + "';";
+
+        try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
+             Statement stmt = c.createStatement()) {
+
+            ResultSet rs = stmt.executeQuery(query);
+            if (rs.next()) {
+                System.out.println("login by cookie:" + rs.getString("login"));
+                return rs.getString("login");
+            }
 
         } catch (SQLException e) {
             System.out.println(e.getMessage());
         }
 
-        cookie.setMaxAge(0);
+        return "";
     }
-
-//    public String getLoginByCookie(String cookieStr) {
-//        System.out.println(cookieStr);
-//        if (cookieStr != null) {
-//            String cookieValue = cookieStr.split("\"")[1];
-//            String query = "SELECT (login) FROM `cookies` WHERE sessionId = '" + cookieValue + "';";
-//
-//            try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
-//                 Statement stmt = c.createStatement()) {
-//
-//                ResultSet rs = stmt.executeQuery(query);
-//                if (rs.next()) {
-//                    System.out.println("login by cookie:" + rs.getString("login"));
-//                    return rs.getString("login");
-//                }
-//
-//            } catch (SQLException e) {
-//                System.out.println(e.getMessage());
-//            }
-//        }
-//        return "";
-//    }
-
-
 }
