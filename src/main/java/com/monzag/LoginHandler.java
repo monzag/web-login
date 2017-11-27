@@ -23,16 +23,20 @@ public class LoginHandler implements HttpHandler {
         if (method.equals("GET")) {
             if (httpExchange.getRequestURI().getPath().equals("/login")) {
                 if (isCookieMatch(cookieStr)) {
-                    response = this.displayHello(cookieStr);
+                    response = displayHello(cookieStr);
                 } else {
-                    response = this.displayLoginFormula();
+                    response = displayLoginFormula();
                 }
             }
 
         }
         if (method.equals("POST")) {
             if (httpExchange.getRequestURI().getPath().equals("/login")) {
-                response = this.login(httpExchange);
+                if (isCookieMatch(cookieStr)) {
+                    response = logout(cookieStr);
+                } else {
+                    response = login(httpExchange);
+                }
             }
         }
 
@@ -123,7 +127,6 @@ public class LoginHandler implements HttpHandler {
 
         String login = cookie.split("!")[1];
         model.with("login", login);
-        model.with("sessionId", cookie);
 
         return template.render(model);
     }
@@ -166,6 +169,55 @@ public class LoginHandler implements HttpHandler {
         }
 
     }
+
+    public String logout(String cookieStr) {
+        removeCookieFromDb(cookieStr);
+        return displayLoginFormula();
+    }
+
+    public void removeCookieFromDb(String cookieStr) {
+        HttpCookie cookie = HttpCookie.parse(cookieStr).get(0);
+        String sessionId = cookie.getValue();
+
+        try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
+             Statement stmt = c.createStatement()) {
+
+
+            String query = String.format("DELETE FROM `cookies` WHERE sessionId = '%s'; ",
+                    sessionId);
+
+            stmt.executeUpdate(query);
+
+
+
+        } catch (SQLException e) {
+            System.out.println(e.getMessage());
+        }
+
+        cookie.setMaxAge(0);
+    }
+
+//    public String getLoginByCookie(String cookieStr) {
+//        System.out.println(cookieStr);
+//        if (cookieStr != null) {
+//            String cookieValue = cookieStr.split("\"")[1];
+//            String query = "SELECT (login) FROM `cookies` WHERE sessionId = '" + cookieValue + "';";
+//
+//            try (Connection c = DriverManager.getConnection("jdbc:sqlite:src/main/resources/database.db");
+//                 Statement stmt = c.createStatement()) {
+//
+//                ResultSet rs = stmt.executeQuery(query);
+//                if (rs.next()) {
+//                    System.out.println("login by cookie:" + rs.getString("login"));
+//                    return rs.getString("login");
+//                }
+//
+//            } catch (SQLException e) {
+//                System.out.println(e.getMessage());
+//            }
+//        }
+//        return "";
+//    }
 
 
 }
